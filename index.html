@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Reformat — convert media in your browser</title>
+<meta name="theme-color" content="#F6F6F3" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#131417" media="(prefers-color-scheme: dark)" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+
+<!-- ffmpeg.wasm (runs entirely in the browser — files never leave the machine) -->
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+
+<script>
+  tailwind.config = {
+    darkMode: "media", // follows the OS / browser appearance setting automatically
+    theme: {
+      extend: {
+        colors: {
+          paper: "#F6F6F3",
+          ink: "#15161A",
+          muted: "#71747C",
+          line: "#E1E2DC",
+          signal: "#FF4D00",
+          signalSoft: "#FFEDE3",
+          // dark counterparts
+          dpaper: "#131417",
+          dink: "#ECEDEA",
+          dmuted: "#9A9DA6",
+          dline: "#2A2C31",
+          dsignal: "#FF7A3D",
+          dsignalSoft: "#301407",
+        },
+        fontFamily: {
+          display: ['"Space Grotesk"', "sans-serif"],
+          mono: ['"Space Mono"', "monospace"],
+        },
+      },
+    },
+  };
+</script>
+
+<style>
+  html { background: #F6F6F3; }
+  ::selection { background: #FF4D00; color: #fff; }
+  .chip[aria-pressed="true"] { background: #15161A; color: #F6F6F3; border-color: #15161A; }
+  .chip:disabled { opacity: 0.3; cursor: not-allowed; }
+  .chip:focus-visible, button:focus-visible, a:focus-visible, [role="button"]:focus-visible {
+    outline: 2px solid #FF4D00; outline-offset: 2px;
+  }
+  .dz-active { border-color: #FF4D00 !important; background: #FFEDE3 !important; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .tc-cursor { animation: blink 1.1s step-end infinite; }
+  @media (prefers-reduced-motion: reduce) {
+    .tc-cursor { animation: none; }
+    * { transition: none !important; }
+  }
+  @media (prefers-color-scheme: dark) {
+    html { background: #131417; }
+    ::selection { background: #FF7A3D; color: #131417; }
+    .chip[aria-pressed="true"] { background: #ECEDEA; color: #131417; border-color: #ECEDEA; }
+    .chip:focus-visible, button:focus-visible, a:focus-visible, [role="button"]:focus-visible { outline-color: #FF7A3D; }
+    .dz-active { border-color: #FF7A3D !important; background: #301407 !important; }
+  }
+</style>
+</head>
+
+<body class="bg-paper dark:bg-dpaper text-ink dark:text-dink font-display min-h-screen antialiased">
+
+<main class="mx-auto max-w-2xl px-5 py-14 sm:py-20">
+
+  <!-- Header -->
+  <header class="mb-12">
+    <p class="font-mono text-[11px] tracking-[0.18em] text-muted dark:text-dmuted uppercase">Local converter · nothing is uploaded</p>
+    <h1 class="mt-3 text-4xl sm:text-5xl font-semibold tracking-tight">Reformat</h1>
+    <p class="mt-3 text-muted dark:text-dmuted leading-relaxed max-w-md">
+      Convert video, audio, or images to another format, right in this tab. Processing runs on your machine, so your files never touch a server.
+    </p>
+  </header>
+
+  <!-- Step 1: file -->
+  <section aria-labelledby="s1">
+    <h2 id="s1" class="font-mono text-[11px] tracking-[0.18em] text-muted dark:text-dmuted uppercase mb-3">Source file</h2>
+
+    <div id="dropzone"
+         class="rounded-md border border-dashed border-line dark:border-dline bg-white/60 dark:bg-white/[0.04] px-6 py-10 text-center cursor-pointer transition-colors"
+         role="button" tabindex="0" aria-label="Choose a media file or drag one here">
+      <input id="fileInput" type="file"
+             accept="video/*,audio/*,image/*,.mkv,.avi,.flv,.wmv,.ts,.m2ts,.3gp,.flac,.ogg,.opus,.aiff,.wma,.tiff,.tif,.bmp"
+             class="sr-only" />
+      <div id="dzEmpty">
+        <p class="text-lg">Drop a video, audio, or image file here</p>
+        <p class="mt-1 text-sm text-muted dark:text-dmuted">or <span class="underline underline-offset-4 decoration-line dark:decoration-dline">browse your files</span></p>
+      </div>
+      <div id="dzFile" class="hidden text-left">
+        <p class="font-mono text-sm break-all" id="fileName"></p>
+        <p class="font-mono text-xs text-muted dark:text-dmuted mt-1">
+          <span id="fileKind" class="uppercase tracking-wider"></span> · <span id="fileSize"></span> ·
+          <button id="clearFile" type="button" class="underline underline-offset-2 hover:text-ink dark:hover:text-dink">remove</button>
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Step 2: target format -->
+  <section aria-labelledby="s2" class="mt-10">
+    <h2 id="s2" class="font-mono text-[11px] tracking-[0.18em] text-muted dark:text-dmuted uppercase mb-3">Convert to</h2>
+    <div id="groups" class="space-y-5"><!-- groups injected --></div>
+    <p id="formatNote" class="mt-4 text-sm text-muted dark:text-dmuted"></p>
+  </section>
+
+  <!-- Step 3: run -->
+  <section class="mt-10">
+    <button id="convertBtn" type="button" disabled
+      class="w-full sm:w-auto rounded-md bg-ink dark:bg-dink px-8 py-3.5 text-paper dark:text-dpaper font-medium disabled:opacity-30 disabled:cursor-not-allowed hover:bg-signal dark:hover:bg-dsignal transition-colors">
+      Convert
+    </button>
+  </section>
+
+  <!-- Status / timecode readout -->
+  <section id="statusPanel" class="mt-10 hidden" aria-live="polite">
+    <div class="rounded-md border border-line dark:border-dline bg-white/60 dark:bg-white/[0.04] p-5">
+      <div class="flex items-baseline justify-between gap-4">
+        <p class="font-mono text-2xl tabular-nums" id="timecode">00:00:00<span class="tc-cursor">_</span></p>
+        <p class="font-mono text-sm text-muted dark:text-dmuted tabular-nums" id="percent"></p>
+      </div>
+      <div class="mt-4 h-1 w-full bg-line dark:bg-dline rounded-full overflow-hidden">
+        <div id="bar" class="h-full bg-signal dark:bg-dsignal rounded-full transition-[width] duration-300" style="width:0%"></div>
+      </div>
+      <p id="statusLine" class="mt-4 font-mono text-xs text-muted dark:text-dmuted break-all leading-relaxed"></p>
+    </div>
+  </section>
+
+  <!-- Result -->
+  <section id="resultPanel" class="mt-6 hidden">
+    <div class="rounded-md border border-signal dark:border-dsignal bg-signalSoft dark:bg-dsignalSoft p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div>
+        <p class="font-medium">Conversion finished</p>
+        <p class="font-mono text-xs text-muted dark:text-dmuted mt-1 break-all" id="resultMeta"></p>
+      </div>
+      <a id="downloadLink" class="rounded-md bg-signal dark:bg-dsignal text-white dark:text-dpaper px-6 py-3 text-center font-medium hover:bg-ink dark:hover:bg-dink transition-colors" download>Download file</a>
+    </div>
+  </section>
+
+  <!-- Error -->
+  <section id="errorPanel" class="mt-6 hidden">
+    <div class="rounded-md border border-red-300 dark:border-red-900 bg-red-50 dark:bg-red-950/40 p-5">
+      <p class="font-medium text-red-800 dark:text-red-300">Conversion failed</p>
+      <p class="mt-1 text-sm text-red-700 dark:text-red-400" id="errorText"></p>
+    </div>
+  </section>
+
+  <footer class="mt-16 border-t border-line dark:border-dline pt-6">
+    <p class="font-mono text-[11px] text-muted dark:text-dmuted leading-relaxed">
+      Powered by ffmpeg.wasm · single-threaded, so large videos take a while · practical limit ≈ 2 GB · first conversion downloads the ~31 MB engine once · theme follows your system appearance
+    </p>
+  </footer>
+</main>
+
+<script>
+(() => {
+  const { FFmpeg } = FFmpegWASM;
+  const { fetchFile, toBlobURL } = FFmpegUtil;
+
+  // ---- format catalogue -------------------------------------------------
+  // group: which section the chip renders in
+  // kinds: which source kinds may target this format
+  const FORMATS = [
+    // Video targets
+    { group:"Video", kinds:["video"], ext:"mp4",  label:".mp4",  mime:"video/mp4",
+      note:"H.264 video + AAC audio. Plays everywhere.",
+      args:(i,o)=>["-i",i,"-c:v","libx264","-preset","fast","-crf","23","-c:a","aac","-b:a","160k","-movflags","+faststart",o] },
+    { group:"Video", kinds:["video"], ext:"webm", label:".webm", mime:"video/webm",
+      note:"VP8 video + Vorbis audio. Open format for the web.",
+      args:(i,o)=>["-i",i,"-c:v","libvpx","-b:v","2M","-c:a","libvorbis",o] },
+    { group:"Video", kinds:["video"], ext:"mov",  label:".mov",  mime:"video/quicktime",
+      note:"QuickTime container with H.264. Friendly to Apple apps.",
+      args:(i,o)=>["-i",i,"-c:v","libx264","-preset","fast","-crf","23","-c:a","aac","-b:a","160k",o] },
+    { group:"Video", kinds:["video"], ext:"mkv",  label:".mkv",  mime:"video/x-matroska",
+      note:"Matroska container with H.264 + AAC.",
+      args:(i,o)=>["-i",i,"-c:v","libx264","-preset","fast","-crf","23","-c:a","aac","-b:a","160k",o] },
+    { group:"Video", kinds:["video"], ext:"avi",  label:".avi",  mime:"video/x-msvideo",
+      note:"Legacy container with MPEG-4 video + MP3 audio.",
+      args:(i,o)=>["-i",i,"-c:v","mpeg4","-q:v","5","-c:a","libmp3lame","-b:a","160k",o] },
+    { group:"Video", kinds:["video"], ext:"gif",  label:".gif",  mime:"image/gif",
+      note:"Silent animated GIF, 12 fps, 480 px wide.",
+      args:(i,o)=>["-i",i,"-vf","fps=12,scale=480:-2:flags=lanczos","-loop","0",o] },
+
+    // Audio targets (also valid for extracting audio from a video)
+    { group:"Audio", kinds:["video","audio"], ext:"mp3",  label:".mp3",  mime:"audio/mpeg",
+      note:"MP3 at 192 kbps. From a video, this strips the video track.",
+      args:(i,o)=>["-i",i,"-vn","-c:a","libmp3lame","-b:a","192k",o] },
+    { group:"Audio", kinds:["video","audio"], ext:"wav",  label:".wav",  mime:"audio/wav",
+      note:"Uncompressed 16-bit PCM. Large files, zero quality loss from here on.",
+      args:(i,o)=>["-i",i,"-vn","-c:a","pcm_s16le",o] },
+    { group:"Audio", kinds:["video","audio"], ext:"flac", label:".flac", mime:"audio/flac",
+      note:"Lossless compression — smaller than WAV, identical sound.",
+      args:(i,o)=>["-i",i,"-vn","-c:a","flac",o] },
+    { group:"Audio", kinds:["video","audio"], ext:"ogg",  label:".ogg",  mime:"audio/ogg",
+      note:"Ogg Vorbis, quality level 5. Open format.",
+      args:(i,o)=>["-i",i,"-vn","-c:a","libvorbis","-q:a","5",o] },
+    { group:"Audio", kinds:["video","audio"], ext:"m4a",  label:".m4a",  mime:"audio/mp4",
+      note:"AAC in an MP4 audio container. Plays natively on Apple devices.",
+      args:(i,o)=>["-i",i,"-vn","-c:a","aac","-b:a","192k",o] },
+
+    // Image targets
+    { group:"Image", kinds:["image"], ext:"png",  label:".png",  mime:"image/png",
+      note:"Lossless, supports transparency.",
+      args:(i,o)=>["-i",i,o] },
+    { group:"Image", kinds:["image"], ext:"jpg",  label:".jpeg", mime:"image/jpeg",
+      note:"Lossy, small files. Transparency becomes a solid background.",
+      args:(i,o)=>["-i",i,"-q:v","3",o] },
+    { group:"Image", kinds:["image"], ext:"bmp",  label:".bmp",  mime:"image/bmp",
+      note:"Uncompressed bitmap.",
+      args:(i,o)=>["-i",i,o] },
+    { group:"Image", kinds:["image"], ext:"tiff", label:".tiff", mime:"image/tiff",
+      note:"Lossless, common in print and scanning workflows.",
+      args:(i,o)=>["-i",i,o] },
+  ];
+
+  const AUDIO_EXTS = ["mp3","wav","flac","ogg","oga","m4a","aac","wma","opus","aiff","aif","alac"];
+  const IMAGE_EXTS = ["png","jpg","jpeg","webp","bmp","tiff","tif","heic","avif"];
+  // .gif sources are treated as video so they can become .mp4/.webm
+
+  const $ = (id) => document.getElementById(id);
+  const dropzone = $("dropzone"), fileInput = $("fileInput");
+  const dzEmpty = $("dzEmpty"), dzFile = $("dzFile");
+  const convertBtn = $("convertBtn");
+  const groupsEl = $("groups"), formatNote = $("formatNote");
+  const statusPanel = $("statusPanel"), resultPanel = $("resultPanel"), errorPanel = $("errorPanel");
+
+  let file = null, kind = null, selected = null, busy = false, lastURL = null;
+  let ffmpeg = null, loaded = false;
+
+  // ---- build grouped chips ----
+  const chipByExt = new Map();
+  ["Video","Audio","Image"].forEach((group) => {
+    const wrap = document.createElement("div");
+    const label = document.createElement("p");
+    label.className = "font-mono text-[11px] tracking-[0.18em] text-muted dark:text-dmuted uppercase mb-2";
+    label.textContent = group;
+    const row = document.createElement("div");
+    row.className = "flex flex-wrap gap-2";
+    row.setAttribute("role","group");
+    row.setAttribute("aria-label", group + " target formats");
+    FORMATS.filter((f)=>f.group===group).forEach((f) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "chip rounded-md border border-line dark:border-dline bg-white/60 dark:bg-white/[0.04] px-4 py-2 font-mono text-sm hover:border-ink dark:hover:border-dink transition-colors";
+      b.textContent = f.label;
+      b.setAttribute("aria-pressed","false");
+      b.addEventListener("click", () => select(f, b));
+      chipByExt.set(f.ext, { chip: b, fmt: f });
+      row.appendChild(b);
+    });
+    wrap.appendChild(label); wrap.appendChild(row);
+    groupsEl.appendChild(wrap);
+  });
+
+  function select(f, b) {
+    if (b.disabled) return;
+    selected = f;
+    chipByExt.forEach(({chip}) => chip.setAttribute("aria-pressed","false"));
+    b.setAttribute("aria-pressed","true");
+    formatNote.textContent = f.note;
+    refresh();
+  }
+
+  function detectKind(name) {
+    const ext = (name.match(/\.([^.]+)$/) || [,""])[1].toLowerCase();
+    if (IMAGE_EXTS.includes(ext)) return "image";
+    if (AUDIO_EXTS.includes(ext)) return "audio";
+    return "video";
+  }
+
+  function applyKind() {
+    chipByExt.forEach(({chip, fmt}) => {
+      const ok = !kind || fmt.kinds.includes(kind);
+      chip.disabled = !ok;
+      if (!ok && selected === fmt) {
+        selected = null;
+        chip.setAttribute("aria-pressed","false");
+        formatNote.textContent = "";
+      }
+    });
+  }
+
+  // ---- file selection ----
+  const fmtSize = (n) => n > 1e9 ? (n/1e9).toFixed(2)+" GB" : n > 1e6 ? (n/1e6).toFixed(1)+" MB" : Math.ceil(n/1e3)+" KB";
+
+  function setFile(f) {
+    file = f || null;
+    kind = file ? detectKind(file.name) : null;
+    dzEmpty.classList.toggle("hidden", !!file);
+    dzFile.classList.toggle("hidden", !file);
+    if (file) {
+      $("fileName").textContent = file.name;
+      $("fileSize").textContent = fmtSize(file.size);
+      $("fileKind").textContent = kind;
+    }
+    applyKind();
+    refresh();
+  }
+
+  dropzone.addEventListener("click", (e) => { if (e.target.id !== "clearFile") fileInput.click(); });
+  dropzone.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); } });
+  fileInput.addEventListener("change", () => setFile(fileInput.files[0]));
+  $("clearFile").addEventListener("click", (e) => { e.stopPropagation(); fileInput.value = ""; setFile(null); });
+
+  ["dragenter","dragover"].forEach((ev) => dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.add("dz-active"); }));
+  ["dragleave","drop"].forEach((ev) => dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.remove("dz-active"); }));
+  dropzone.addEventListener("drop", (e) => { const f = e.dataTransfer.files[0]; if (f) setFile(f); });
+
+  function refresh() { convertBtn.disabled = !(file && selected) || busy; }
+
+  // ---- status helpers ----
+  const pad = (n) => String(n).padStart(2, "0");
+  function setTimecode(sec) {
+    const s = Math.max(0, Math.floor(sec));
+    $("timecode").innerHTML = `${pad(Math.floor(s/3600))}:${pad(Math.floor(s/60)%60)}:${pad(s%60)}<span class="tc-cursor">_</span>`;
+  }
+  function status(msg) { $("statusLine").textContent = msg; }
+
+  // ---- engine ----
+  function makeFF() {
+    const ff = new FFmpeg();
+    ff.on("log", ({ message }) => status(message));
+    ff.on("progress", ({ progress, time }) => {
+      const p = Math.min(100, Math.max(0, Math.round(progress * 100)));
+      $("bar").style.width = p + "%";
+      $("percent").textContent = p + "%";
+      setTimecode((time || 0) / 1e6);
+    });
+    return ff;
+  }
+
+  // toBlobURL with live download progress so big files never look frozen
+  async function download(url, mime, label) {
+    return await toBlobURL(url, mime, true, ({ received, total }) => {
+      const pct = total > 0 ? Math.round((received / total) * 100) + "%" : fmtSize(received);
+      status(`Downloading ${label} — ${pct}…`);
+    });
+  }
+
+  // ffmpeg.load() can hang forever (instead of throwing) if its worker
+  // fails to start, so every attempt races against a timeout.
+  function loadWithTimeout(cfg, ms) {
+    ffmpeg = makeFF();
+    return Promise.race([
+      ffmpeg.load(cfg),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("engine start timed out")), ms)),
+    ]);
+  }
+
+  async function loadEngine() {
+    if (loaded) return;
+    const ffURL   = "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd";
+    const coreURL = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd";
+
+    let config;
+    try {
+      config = {
+        coreURL: await download(`${coreURL}/ffmpeg-core.js`, "text/javascript", "engine script"),
+        wasmURL: await download(`${coreURL}/ffmpeg-core.wasm`, "application/wasm", "engine (one-time, ~31 MB)"),
+      };
+    } catch {
+      throw new Error("Couldn't download the conversion engine. Check your internet connection (the CDN cdn.jsdelivr.net must be reachable), then try again.");
+    }
+
+    let workerURL = null;
+    try { workerURL = await download(`${ffURL}/814.ffmpeg.js`, "text/javascript", "engine worker"); } catch {}
+
+    status("Starting engine…");
+    try {
+      await loadWithTimeout(workerURL ? { ...config, classWorkerURL: workerURL } : config, 20000);
+    } catch {
+      try { ffmpeg.terminate(); } catch {}
+      status("First start attempt failed — retrying…");
+      try {
+        await loadWithTimeout(config, 20000);
+      } catch {
+        try { ffmpeg.terminate(); } catch {}
+        throw new Error(
+          "The engine downloaded but couldn't start. This usually happens when the page is opened directly as a file (the address bar starts with file://). " +
+          "Serve it over HTTP instead: in a terminal, run `python3 -m http.server` from the folder containing this file, then open http://localhost:8000/converter.html. " +
+          "If it still fails, the browser console (F12 → Console) will show the underlying error."
+        );
+      }
+    }
+    loaded = true;
+  }
+
+  // ---- convert ----
+  convertBtn.addEventListener("click", async () => {
+    if (!file || !selected || busy) return;
+    busy = true; refresh();
+    resultPanel.classList.add("hidden");
+    errorPanel.classList.add("hidden");
+    statusPanel.classList.remove("hidden");
+    $("bar").style.width = "0%"; $("percent").textContent = ""; setTimecode(0);
+    convertBtn.textContent = "Converting…";
+
+    const safeBase = (file.name.replace(/\.[^.]+$/, "") || "output").replace(/[^\w\-. ]+/g, "_");
+    const inExt = (file.name.match(/\.([^.]+)$/) || [,"dat"])[1].toLowerCase();
+    const inName = "input." + inExt;
+    const outName = "output." + selected.ext;
+
+    try {
+      await loadEngine();
+      status("Reading file…");
+      await ffmpeg.writeFile(inName, await fetchFile(file));
+      status("Converting…");
+      const code = await ffmpeg.exec(selected.args(inName, outName));
+      if (code !== 0) throw new Error("FFmpeg exited with code " + code + ". The last log line above may explain why.");
+      const data = await ffmpeg.readFile(outName);
+      if (lastURL) URL.revokeObjectURL(lastURL);
+      lastURL = URL.createObjectURL(new Blob([data.buffer], { type: selected.mime }));
+
+      const dl = $("downloadLink");
+      dl.href = lastURL;
+      dl.download = `${safeBase}.${selected.ext}`;
+      $("resultMeta").textContent = `${safeBase}.${selected.ext} · ${fmtSize(data.byteLength)}`;
+      $("bar").style.width = "100%"; $("percent").textContent = "100%";
+      status("Done.");
+      resultPanel.classList.remove("hidden");
+
+      // tidy the virtual filesystem
+      try { await ffmpeg.deleteFile(inName); await ffmpeg.deleteFile(outName); } catch {}
+    } catch (err) {
+      $("errorText").textContent = (err && err.message) ? err.message : "Something went wrong. Try a smaller file or a different target format.";
+      errorPanel.classList.remove("hidden");
+    } finally {
+      busy = false;
+      convertBtn.textContent = "Convert";
+      refresh();
+    }
+  });
+})();
+</script>
+</body>
+</html>
