@@ -340,12 +340,33 @@
     return ff;
   }
 
-  // toBlobURL with live download progress so big files never look frozen
+  // Hand-rolled download-with-progress. We deliberately avoid @ffmpeg/util's
+  // progressive toBlobURL: it errors with "failed to complete download" when
+  // the CDN gzips the response, because the Content-Length header (compressed
+  // size) never matches the decompressed bytes it counts.
   async function download(url, mime, label) {
-    return await toBlobURL(url, mime, true, ({ received, total }) => {
-      const pct = total > 0 ? Math.round((received / total) * 100) + "%" : fmtSize(received);
-      status(`Downloading ${label} — ${pct}…`);
-    });
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} while fetching ${label}`);
+    const total = parseInt(resp.headers.get("Content-Length") || "0", 10);
+    let blob;
+    const reader = resp.body && resp.body.getReader ? resp.body.getReader() : null;
+    if (reader) {
+      const chunks = [];
+      let received = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.length;
+        const pct = total > 0 ? Math.min(100, Math.round((received / total) * 100)) + "%" : fmtSize(received);
+        status(`Downloading ${label} — ${pct}…`);
+      }
+      blob = new Blob(chunks, { type: mime });
+    } else {
+      status(`Downloading ${label}…`);
+      blob = new Blob([await resp.arrayBuffer()], { type: mime });
+    }
+    return URL.createObjectURL(blob);
   }
 
   // ffmpeg.load() can hang forever (instead of throwing) if its worker
