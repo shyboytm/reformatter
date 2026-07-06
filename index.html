@@ -382,7 +382,10 @@
   async function loadEngine() {
     if (loaded) return;
     const ffURL   = "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd";
-    const coreURL = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd";
+    // Must be the ESM core: passing classWorkerURL makes ffmpeg spawn a module
+    // worker, which loads the core via `import()` and needs its default export.
+    // The UMD core has none, so the worker hangs forever with it.
+    const coreURL = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm";
 
     let config;
     try {
@@ -394,25 +397,23 @@
       throw new Error("Couldn't download the conversion engine. Check your internet connection (the CDN cdn.jsdelivr.net must be reachable), then try again.");
     }
 
-    let workerURL = null;
-    try { workerURL = await download(`${ffURL}/814.ffmpeg.js`, "text/javascript", "engine worker"); } catch {}
+    let workerURL;
+    try {
+      workerURL = await download(`${ffURL}/814.ffmpeg.js`, "text/javascript", "engine worker");
+    } catch {
+      throw new Error("Couldn't download the engine's worker script from cdn.jsdelivr.net. Check your connection and try again.");
+    }
 
     status("Starting engine…");
     try {
-      await loadWithTimeout(workerURL ? { ...config, classWorkerURL: workerURL } : config, 20000);
-    } catch {
+      await loadWithTimeout({ ...config, classWorkerURL: workerURL }, 45000);
+    } catch (e) {
       try { ffmpeg.terminate(); } catch {}
-      status("First start attempt failed — retrying…");
-      try {
-        await loadWithTimeout(config, 20000);
-      } catch {
-        try { ffmpeg.terminate(); } catch {}
-        throw new Error(
-          "The engine downloaded but couldn't start. This usually happens when the page is opened directly as a file (the address bar starts with file://). " +
-          "Serve it over HTTP instead: in a terminal, run `python3 -m http.server` from the folder containing this file, then open http://localhost:8000/converter.html. " +
-          "If it still fails, the browser console (F12 → Console) will show the underlying error."
-        );
-      }
+      throw new Error(
+        "The engine downloaded but couldn't start" + (e && e.message ? ` (${e.message})` : "") + ". " +
+        "Try a hard refresh (Ctrl/Cmd+Shift+R) in a current version of Chrome, Edge, Firefox, or Safari. " +
+        "If it keeps failing, the browser console (F12 → Console) will show the underlying error — send that along and it can be diagnosed."
+      );
     }
     loaded = true;
   }
